@@ -92,29 +92,33 @@ vi.mock("./compact.js", () => ({
   compactEmbeddedPiSessionDirect: vi.fn(),
 }));
 
+export const mockedResolveModel = vi.fn(() => ({
+  model: {
+    id: "test-model",
+    provider: "anthropic",
+    contextWindow: 200000,
+    api: "messages",
+  },
+  error: null,
+  authStorage: {
+    setRuntimeApiKey: vi.fn(),
+  },
+  modelRegistry: {},
+}));
+
 vi.mock("./model.js", () => ({
-  resolveModel: vi.fn(() => ({
-    model: {
-      id: "test-model",
-      provider: "anthropic",
-      contextWindow: 200000,
-      api: "messages",
-    },
-    error: null,
-    authStorage: {
-      setRuntimeApiKey: vi.fn(),
-    },
-    modelRegistry: {},
-  })),
+  resolveModel: mockedResolveModel,
+}));
+
+export const mockedGetApiKeyForModel = vi.fn(async () => ({
+  apiKey: "test-key",
+  profileId: "test-profile",
+  source: "test",
 }));
 
 vi.mock("../model-auth.js", () => ({
   ensureAuthProfileStore: vi.fn(() => ({})),
-  getApiKeyForModel: vi.fn(async () => ({
-    apiKey: "test-key",
-    profileId: "test-profile",
-    source: "test",
-  })),
+  getApiKeyForModel: mockedGetApiKeyForModel,
   resolveAuthProfileOrder: vi.fn(() => []),
 }));
 
@@ -186,6 +190,14 @@ vi.mock("./tool-result-truncation.js", () => ({
     reason: "no oversized tool results",
   })),
   sessionLikelyHasOversizedToolResults: vi.fn(() => false),
+}));
+
+export const mockedComputeBackoff = vi.fn(() => 123);
+export const mockedSleepWithAbort = vi.fn(async () => {});
+
+vi.mock("../../infra/backoff.js", () => ({
+  computeBackoff: mockedComputeBackoff,
+  sleepWithAbort: mockedSleepWithAbort,
 }));
 
 vi.mock("./utils.js", () => ({

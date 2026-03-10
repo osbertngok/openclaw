@@ -42,6 +42,7 @@ import {
   classifyFailoverReason,
   formatAssistantErrorText,
   isAuthAssistantError,
+  isCodexOauthTransientServerError,
   isBillingAssistantError,
   isCompactionFailureError,
   isLikelyContextOverflowError,
@@ -91,6 +92,14 @@ const OVERLOAD_FAILOVER_BACKOFF_POLICY: BackoffPolicy = {
   factor: 2,
   jitter: 0.2,
 };
+
+const CODEX_OAUTH_SERVER_ERROR_RETRY_POLICY: BackoffPolicy = {
+  initialMs: 400,
+  maxMs: 2_500,
+  factor: 2,
+  jitter: 0.25,
+};
+const MAX_CODEX_OAUTH_SERVER_ERROR_RETRIES = 3;
 
 // Avoid Anthropic's refusal test token poisoning session transcripts.
 const ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL = "ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL";
@@ -747,6 +756,7 @@ export async function runEmbeddedPiAgent(
       let autoCompactionCount = 0;
       let runLoopIterations = 0;
       let overloadFailoverAttempts = 0;
+      let codexOauthServerErrorRetries = 0;
       const maybeMarkAuthProfileFailure = async (failure: {
         profileId?: string;
         reason?: AuthProfileFailureReason | null;
@@ -795,6 +805,29 @@ export async function runEmbeddedPiAgent(
           }
           throw err;
         }
+      };
+      const maybeRetryCodexOauthServerError = async (errorMessage?: string): Promise<boolean> => {
+        if (
+          !isCodexOauthTransientServerError({
+            provider,
+            authMode: apiKeyInfo?.mode,
+            errorMessage,
+          }) ||
+          codexOauthServerErrorRetries >= MAX_CODEX_OAUTH_SERVER_ERROR_RETRIES
+        ) {
+          return false;
+        }
+        codexOauthServerErrorRetries += 1;
+        const delayMs = computeBackoff(
+          CODEX_OAUTH_SERVER_ERROR_RETRY_POLICY,
+          codexOauthServerErrorRetries,
+        );
+        log.warn(
+          `codex oauth transient server error; retrying ${provider}/${modelId} ` +
+            `(attempt ${codexOauthServerErrorRetries}/${MAX_CODEX_OAUTH_SERVER_ERROR_RETRIES}) in ${delayMs}ms`,
+        );
+        await sleepWithAbort(delayMs, params.abortSignal);
+        return true;
       };
       // Resolve the context engine once and reuse across retries to avoid
       // repeated initialization/connection overhead per attempt.
@@ -1162,6 +1195,9 @@ export async function runEmbeddedPiAgent(
               authRetryPending = true;
               continue;
             }
+            if (await maybeRetryCodexOauthServerError(errorText)) {
+              continue;
+            }
             // Handle role ordering errors with a user-friendly message
             if (/incorrect role information|roles must alternate/i.test(errorText)) {
               return {
@@ -1293,6 +1329,10 @@ export async function runEmbeddedPiAgent(
               `unsupported thinking level for ${provider}/${modelId}; retrying with ${fallbackThinking}`,
             );
             thinkLevel = fallbackThinking;
+            continue;
+          }
+
+          if (!aborted && (await maybeRetryCodexOauthServerError(lastAssistant?.errorMessage))) {
             continue;
           }
 
