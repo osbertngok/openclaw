@@ -42,6 +42,11 @@ export const BILLING_ERROR_USER_MESSAGE = formatBillingErrorMessage();
 const RATE_LIMIT_ERROR_USER_MESSAGE = "⚠️ API rate limit reached. Please try again later.";
 const OVERLOADED_ERROR_USER_MESSAGE =
   "The AI service is temporarily overloaded. Please try again in a moment.";
+const SERVER_ERROR_USER_MESSAGE =
+  "The AI service is temporarily unavailable. Please try again in a moment.";
+
+const TRANSIENT_SERVER_ERROR_STATUS_RE = /\b(?:500|502|503|504|529)\b.*server error/i;
+const TRANSIENT_SERVER_ERROR_JSON_RE = /"(?:type|code)":"server_error"/i;
 
 function formatRateLimitOrOverloadedErrorCopy(raw: string): string | undefined {
   if (isRateLimitErrorMessage(raw)) {
@@ -51,6 +56,38 @@ function formatRateLimitOrOverloadedErrorCopy(raw: string): string | undefined {
     return OVERLOADED_ERROR_USER_MESSAGE;
   }
   return undefined;
+}
+
+export function isTransientServerErrorMessage(raw: string): boolean {
+  if (!raw) {
+    return false;
+  }
+  return TRANSIENT_SERVER_ERROR_JSON_RE.test(raw) || TRANSIENT_SERVER_ERROR_STATUS_RE.test(raw);
+}
+
+function formatTransientServerErrorCopy(raw: string): string | undefined {
+  if (!isTransientServerErrorMessage(raw)) {
+    return undefined;
+  }
+  return SERVER_ERROR_USER_MESSAGE;
+}
+
+export function isCodexOauthTransientServerError(params: {
+  provider: string;
+  authMode?: string;
+  errorMessage?: string;
+}): boolean {
+  if (params.provider !== "openai-codex" || params.authMode !== "oauth") {
+    return false;
+  }
+  const raw = params.errorMessage?.trim();
+  if (!raw) {
+    return false;
+  }
+  if (/invalid_request_error|authentication_error|permission_error|insufficient_quota/i.test(raw)) {
+    return false;
+  }
+  return isTransientServerErrorMessage(raw);
 }
 
 function isReasoningConstraintErrorMessage(raw: string): boolean {
@@ -698,6 +735,11 @@ export function formatAssistantErrorText(
     return transientCopy;
   }
 
+  const transientServerCopy = formatTransientServerErrorCopy(raw);
+  if (transientServerCopy) {
+    return transientServerCopy;
+  }
+
   if (isTimeoutErrorMessage(raw)) {
     return "LLM request timed out.";
   }
@@ -747,6 +789,11 @@ export function sanitizeUserFacingText(text: string, opts?: { errorContext?: boo
 
     if (isBillingErrorMessage(trimmed)) {
       return BILLING_ERROR_USER_MESSAGE;
+    }
+
+    const transientServerCopy = formatTransientServerErrorCopy(trimmed);
+    if (transientServerCopy) {
+      return transientServerCopy;
     }
 
     if (isRawApiErrorPayload(trimmed) || isLikelyHttpErrorText(trimmed)) {
